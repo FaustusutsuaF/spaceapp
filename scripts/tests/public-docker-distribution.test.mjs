@@ -95,7 +95,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
 
   assert.match(
     normalizedRuntimeStage,
-    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.28\.1 postcss-selector-parser@7\.1\.6/
+    /npm pack --ignore-scripts --no-audit --no-fund --pack-destination \/tmp\/npm-security-patches brace-expansion@5\.0\.12 tar@7\.5\.21 ip-address@10\.7\.4 undici@6\.29\.1 postcss-selector-parser@7\.1\.6/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -115,7 +115,7 @@ test("runtime images patch fixable vulnerabilities in npm's bundled dependencies
   );
   assert.match(
     normalizedRuntimeStage,
-    /tar -xzf \/tmp\/npm-security-patches\/undici-6\.28\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/undici --strip-components=1/
+    /tar -xzf \/tmp\/npm-security-patches\/undici-6\.29\.1\.tgz -C \/usr\/local\/lib\/node_modules\/npm\/node_modules\/undici --strip-components=1/
   );
   assert.match(
     normalizedRuntimeStage,
@@ -347,4 +347,32 @@ test("core seeds generic starter memory only when mutable owner memory is absent
   assert.doesNotMatch(core, /gemini_history|SPACE_GEMINI_MEMORY/);
   assert.match(starter, /^# SpaceApp Memory/m);
   assert.doesNotMatch(starter, /\/etc\/docs|\/srv\/space|spaceapp-user|oll4\.com/i);
+});
+
+test("Dockerfile stages per-service dependency closures instead of copying the full monorepo into runtime-base", async () => {
+  const dockerfile = await readFile(join(root, "Dockerfile"), "utf8");
+  const stages = Object.fromEntries(
+    dockerfile.split(/^(?=FROM )/m).map((stage) => [stage.match(/^FROM \S+ AS (\S+)/)?.[1], stage])
+  );
+
+  assert.match(stages.build, /node deploy\/docker\/prepare-container-targets\.mjs/);
+  assert.doesNotMatch(stages["runtime-base"], /COPY --from=build[^\n]*\/app\/(?:node_modules|apps|packages)\b/);
+  assert.match(stages.core, /COPY --from=build --chown=spaceapp:spaceapp \/app\/deploy\/container-targets\/core\/ \.\//);
+  assert.match(stages.browser, /COPY --from=build --chown=spaceapp:spaceapp \/app\/deploy\/container-targets\/browser\/ \.\//);
+  assert.match(stages.cli, /COPY --from=build --chown=spaceapp:spaceapp \/app\/deploy\/container-targets\/cli\/ \.\//);
+  assert.match(stages.cli, /rm -rf \/usr\/local\/lib\/node_modules\/@opencode\/cli\/node_modules/);
+
+  const { containerTargetManifest } = await import("../../deploy/docker/prepare-container-targets.mjs");
+  assert.deepEqual(containerTargetManifest.cli.workspaces, ["packages/cli-host"]);
+  assert.deepEqual(containerTargetManifest.browser.workspaces, [
+    "packages/browser-host",
+    "packages/contracts",
+    "packages/db",
+    "packages/memory-graph",
+    "packages/runtime"
+  ]);
+  assert.deepEqual(containerTargetManifest.browser.entrypointModules, [
+    "apps/api/dist/browser-host-main.js"
+  ]);
+  assert.ok(containerTargetManifest.core.excludeDependencies.includes("node-pty"));
 });

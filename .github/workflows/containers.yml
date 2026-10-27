@@ -1,26 +1,40 @@
-name: Container matrix
+name: Multi-arch containers
 
 on:
   pull_request:
     paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "package-lock.json"
       - "apps/**"
       - "packages/**"
       - "!packages/run-spaceapp/**"
-      - "deploy/docker/**"
+      - "agent-skills/**"
       - "starter-memory/**"
-      - "Dockerfile"
-      - "package-lock.json"
+      - "deploy/docker/**"
+      - "scripts/public-export.mjs"
+      - "scripts/container-image-size-budget.mjs"
+      - "scripts/tests/container-image-size-budget.test.mjs"
+      - "scripts/tests/public-docker-distribution.test.mjs"
   push:
     branches:
       - main
     paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "package-lock.json"
       - "apps/**"
       - "packages/**"
       - "!packages/run-spaceapp/**"
-      - "deploy/docker/**"
+      - "agent-skills/**"
       - "starter-memory/**"
-      - "Dockerfile"
-      - "package-lock.json"
+      - "deploy/docker/**"
+      - "scripts/public-export.mjs"
+      - "scripts/container-image-size-budget.mjs"
+      - "scripts/tests/container-image-size-budget.test.mjs"
+      - "scripts/tests/public-docker-distribution.test.mjs"
   workflow_dispatch:
 
 permissions:
@@ -28,11 +42,13 @@ permissions:
 
 concurrency:
   group: containers-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     name: ${{ matrix.target }} / linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -43,31 +59,205 @@ jobs:
         arch:
           - amd64
           - arm64
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          persist-credentials: false
-
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+          node-version: "22.23.0"
+      - name: Create sanitized public candidate
+        run: node scripts/public-export.mjs --output "${{ runner.temp }}/spaceapp-public-export"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v3.12.0
+      - name: Build target image without pushing
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v6.19.2
         with:
-          context: .
+          context: ${{ runner.temp }}/spaceapp-public-export
+          file: ${{ runner.temp }}/spaceapp-public-export/Dockerfile
           target: ${{ matrix.target }}
-          platforms: linux/${{ matrix.arch }}
-          push: false
+          platforms: ${{ matrix.platform }}
           load: true
+          push: false
           tags: spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}
-          provenance: false
           cache-from: type=gha,scope=${{ matrix.target }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ matrix.arch }}
+      - name: Enforce container image size budget
+        working-directory: ${{ runner.temp }}/spaceapp-public-export
+        run: |
+          node scripts/container-image-size-budget.mjs \
+            --target "${{ matrix.target }}" \
+            --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+      - name: Verify CLI container startup and socket readiness
+        if: matrix.target == 'cli'
+        run: |
+          set -euo pipefail
+          IMAGE="spaceapp-ci:cli-${{ matrix.arch }}"
+          CONTAINER="spaceapp-smoke-cli-${{ matrix.arch }}"
+          trap 'docker rm -f "$CONTAINER" >/dev/null 2>&1 || true' EXIT
 
-      - name: Enforce container size budget
-        run: >-
-          node scripts/container-image-size-budget.mjs
-          --target "${{ matrix.target }}"
-          --image "spaceapp-ci:${{ matrix.target }}-${{ matrix.arch }}"
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -ec '
+            /usr/local/bin/opencode --version
+            test ! -d /usr/local/lib/node_modules/@opencode/cli/node_modules
+            test ! -d /app/apps
+            test ! -d /app/node_modules/@temporalio
+          '
+
+          docker run -d --name "$CONTAINER" \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_MEMORY_ROOT=/var/lib/spaceapp/memory \
+            -e SPACE_CLI_HOST_SOCKET=/run/spaceapp-cli/host.sock \
+            "$IMAGE"
+          for attempt in $(seq 1 30); do
+            if docker exec "$CONTAINER" node -e "
+              import('node:net').then(({ createConnection }) => {
+                const sock = createConnection('/run/spaceapp-cli/host.sock');
+                sock.on('connect', () => { sock.end(); process.exit(0); });
+                sock.on('error', () => process.exit(1));
+              });
+            " 2>/dev/null; then
+              echo "CLI host socket ready on attempt ${attempt}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$CONTAINER" >&2 || true
+          exit 1
+      - name: Verify Browser container startup, socket readiness, and headless Chromium
+        if: matrix.target == 'browser'
+        run: |
+          set -euo pipefail
+          IMAGE="spaceapp-ci:browser-${{ matrix.arch }}"
+          NET="spaceapp-smoke-browser-net-${{ matrix.arch }}"
+          PG="spaceapp-smoke-browser-pg-${{ matrix.arch }}"
+          CONTAINER="spaceapp-smoke-browser-${{ matrix.arch }}"
+          SECRETS_DIR="$(mktemp -d)"
+          trap 'docker rm -f "$CONTAINER" "$PG" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; rm -rf "$SECRETS_DIR"' EXIT
+
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -ec '
+            /usr/bin/chromium --headless --no-sandbox --disable-gpu --dump-dom about:blank | grep -q "<html>"
+            test ! -d /app/apps/web
+            test ! -d /app/node_modules/node-pty
+            test ! -d /app/node_modules/@temporalio
+          '
+
+          docker network create "$NET"
+          docker run -d --name "$PG" --network "$NET" \
+            -e POSTGRES_USER=spaceapp \
+            -e POSTGRES_PASSWORD=spaceapp-smoke-pw \
+            -e POSTGRES_DB=spaceapp \
+            pgvector/pgvector:pg17
+
+          for attempt in $(seq 1 30); do
+            if docker exec "$PG" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          printf 'postgresql://spaceapp:spaceapp-smoke-pw@%s:5432/spaceapp' "$PG" > "$SECRETS_DIR/database-url"
+          chmod 0644 "$SECRETS_DIR/database-url"
+
+          docker run --rm --network "$NET" \
+            -e SPACE_DATABASE_URL="postgresql://spaceapp:spaceapp-smoke-pw@${PG}:5432/spaceapp" \
+            --entrypoint node "$IMAGE" packages/db/dist/migrate.js
+
+          docker run -d --name "$CONTAINER" --network "$NET" \
+            -v "$SECRETS_DIR:/run/secrets:ro" \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACE_DATABASE_URL_FILE=/run/secrets/database-url \
+            -e SPACE_ARTIFACT_ROOT=/var/lib/spaceapp/artifacts \
+            -e SPACE_BROWSER_SESSIONS_ENABLED=true \
+            -e SPACE_BROWSER_HOST_SOCKET=/run/spaceapp-browser/browser-host.sock \
+            -e SPACE_BROWSER_SESSIONS_DEFAULT_URL=about:blank \
+            "$IMAGE"
+
+          for attempt in $(seq 1 30); do
+            if docker exec "$CONTAINER" node -e "
+              import('node:net').then(({ createConnection }) => {
+                const sock = createConnection('/run/spaceapp-browser/browser-host.sock');
+                sock.on('connect', () => { sock.end(); process.exit(0); });
+                sock.on('error', () => process.exit(1));
+              });
+            " 2>/dev/null; then
+              echo "Browser host socket ready on attempt ${attempt}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$CONTAINER" >&2 || true
+          exit 1
+      - name: Verify Core container startup and /readyz healthcheck
+        if: matrix.target == 'core'
+        run: |
+          set -euo pipefail
+          IMAGE="spaceapp-ci:core-${{ matrix.arch }}"
+          NET="spaceapp-smoke-core-net-${{ matrix.arch }}"
+          PG="spaceapp-smoke-core-pg-${{ matrix.arch }}"
+          CONTAINER="spaceapp-smoke-core-${{ matrix.arch }}"
+          SECRETS_DIR="$(mktemp -d)"
+          trap 'docker rm -f "$CONTAINER" "$PG" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; rm -rf "$SECRETS_DIR"' EXIT
+
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -ec '
+            test ! -d /app/node_modules/node-pty
+          '
+
+          docker network create "$NET"
+          docker run -d --name "$PG" --network "$NET" \
+            -e POSTGRES_USER=spaceapp \
+            -e POSTGRES_PASSWORD=spaceapp-smoke-pw \
+            -e POSTGRES_DB=spaceapp \
+            pgvector/pgvector:pg17
+
+          for attempt in $(seq 1 30); do
+            if docker exec "$PG" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          printf 'postgresql://spaceapp:spaceapp-smoke-pw@%s:5432/spaceapp' "$PG" > "$SECRETS_DIR/database-url"
+          printf 'smoke-session-secret-0123456789abcdef0123456789abcdef' > "$SECRETS_DIR/session-secret"
+          printf 'smoke-setup-token-0123456789abcdef0123456789abcdef' > "$SECRETS_DIR/setup-token"
+          chmod 0644 "$SECRETS_DIR/database-url" "$SECRETS_DIR/session-secret" "$SECRETS_DIR/setup-token"
+
+          docker run -d --name "$CONTAINER" --network "$NET" \
+            -v "$SECRETS_DIR:/run/secrets:ro" \
+            -e SPACE_PUBLIC_DISTRIBUTION=true \
+            -e SPACE_AGENT_TOOLS_WRITER=disabled \
+            -e SPACE_DEV_LOGIN=false \
+            -e SPACE_RUNTIME_STORE=postgres \
+            -e SPACE_API_HOST=127.0.0.1 \
+            -e SPACE_API_PORT=4910 \
+            -e SPACE_WEB_HOST=0.0.0.0 \
+            -e SPACE_WEB_PORT=4911 \
+            -e SPACE_API_ORIGIN=http://127.0.0.1:4910 \
+            -e SPACEAPP_WORKFLOWS_ENABLED=false \
+            -e SPACE_CLI_ENABLED=false \
+            -e SPACE_BROWSER_SESSIONS_ENABLED=false \
+            "$IMAGE"
+
+          for attempt in $(seq 1 60); do
+            if docker exec "$CONTAINER" node -e "
+              fetch('http://127.0.0.1:4911/readyz')
+                .then(async (r) => {
+                  const body = await r.json();
+                  if (!r.ok || body.ok !== true) process.exit(1);
+                })
+                .catch(() => process.exit(1));
+            " 2>/dev/null; then
+              echo "Core /readyz healthy on attempt ${attempt}"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$CONTAINER" >&2 || true
+          exit 1
