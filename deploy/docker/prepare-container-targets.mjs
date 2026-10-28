@@ -81,6 +81,11 @@ const workspaceRuntimeDirectories = Object.freeze({
   "packages/db": Object.freeze(["migrations"])
 });
 
+/**
+ * Check whether a filesystem path exists (including broken symlinks).
+ * @param {string} targetPath
+ * @returns {Promise<boolean>}
+ */
 async function pathExists(targetPath) {
   try {
     await lstat(targetPath);
@@ -90,10 +95,20 @@ async function pathExists(targetPath) {
   }
 }
 
+/**
+ * Read and parse a UTF-8 JSON file.
+ * @param {string} filePath
+ * @returns {Promise<any>}
+ */
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
+/**
+ * Extract the npm package name (scoped or unscoped) from a bare module specifier.
+ * @param {string} specifier
+ * @returns {string}
+ */
 function packageNameFromSpecifier(specifier) {
   if (specifier.startsWith("@")) {
     const parts = specifier.split("/");
@@ -103,6 +118,13 @@ function packageNameFromSpecifier(specifier) {
   return name;
 }
 
+/**
+ * Resolve an installed package directory by walking up `node_modules` from each start directory to `rootDir`.
+ * @param {string} rootDir
+ * @param {string} packageName
+ * @param {string[]} fromDirs
+ * @returns {Promise<string | null>}
+ */
 async function resolvePackageDir(rootDir, packageName, fromDirs) {
   for (const startDir of fromDirs) {
     let current = resolve(startDir);
@@ -120,11 +142,27 @@ async function resolvePackageDir(rootDir, packageName, fromDirs) {
   return null;
 }
 
-async function collectDependencyClosure(rootDir, workspaces, seedDependencies = [], excludeDependencies = []) {
+/**
+ * Collect the transitive runtime dependency closure for a target's workspaces and entrypoints,
+ * returning all resolved package directories relative to `rootDir` (including workspace-nested `node_modules`).
+ * @param {string} rootDir
+ * @param {readonly string[]} workspaces
+ * @param {readonly string[]} [seedDependencies]
+ * @param {readonly string[]} [excludeDependencies]
+ * @param {readonly string[]} [entrypointModules]
+ * @returns {Promise<string[]>}
+ */
+export async function collectDependencyClosure(
+  rootDir,
+  workspaces,
+  seedDependencies = [],
+  excludeDependencies = [],
+  entrypointModules = []
+) {
   const excluded = new Set(excludeDependencies);
   const queue = [];
   const seenPackageDirs = new Set();
-  const topLevelPackages = new Set();
+  const stagedPackages = new Set();
 
   for (const workspace of workspaces) {
     const pkgPath = join(rootDir, workspace, "package.json");
@@ -145,11 +183,24 @@ async function collectDependencyClosure(rootDir, workspaces, seedDependencies = 
     }
   }
 
+  const entrypointWorkspaces = [
+    ...new Set(
+      entrypointModules.map((relEntry) => {
+        const parts = relEntry.replace(/\\/g, "/").split("/");
+        return parts.slice(0, 2).join("/");
+      })
+    )
+  ];
+  const seedSearchDirs = [
+    ...entrypointWorkspaces.map((ws) => join(rootDir, ws)),
+    rootDir
+  ];
+
   for (const depName of seedDependencies) {
     if (depName.startsWith("@space/") || excluded.has(depName)) continue;
     queue.push({
       name: depName,
-      searchFrom: [rootDir]
+      searchFrom: seedSearchDirs
     });
   }
 
@@ -161,9 +212,9 @@ async function collectDependencyClosure(rootDir, workspaces, seedDependencies = 
     if (seenPackageDirs.has(pkgDir)) continue;
     seenPackageDirs.add(pkgDir);
 
-    const relToRootNodeModules = relative(join(rootDir, "node_modules"), pkgDir);
-    if (!relToRootNodeModules.startsWith("..") && !relToRootNodeModules.includes("node_modules")) {
-      topLevelPackages.add(relToRootNodeModules);
+    const relPkgDir = relative(rootDir, pkgDir).replace(/\\/g, "/");
+    if (relPkgDir && !relPkgDir.startsWith("..")) {
+      stagedPackages.add(relPkgDir);
     }
 
     const pkg = await readJson(join(pkgDir, "package.json"));
@@ -180,9 +231,16 @@ async function collectDependencyClosure(rootDir, workspaces, seedDependencies = 
     }
   }
 
-  return [...topLevelPackages].sort();
+  return [...stagedPackages].sort();
 }
 
+/**
+ * Copy a workspace's runtime artifacts (`package.json`, `dist`, runtime files/migrations) and link `@space/*` in `node_modules`.
+ * @param {string} rootDir
+ * @param {string} stageDir
+ * @param {string} workspace
+ * @returns {Promise<void>}
+ */
 async function copyWorkspace(rootDir, stageDir, workspace) {
   const srcWorkspace = join(rootDir, workspace);
   const dstWorkspace = join(stageDir, workspace);
@@ -238,6 +296,13 @@ async function copyWorkspace(rootDir, stageDir, workspace) {
   }
 }
 
+/**
+ * Copy a standalone compiled entrypoint module and all relative local files it imports.
+ * @param {string} rootDir
+ * @param {string} stageDir
+ * @param {string} entrypointRelPath
+ * @returns {Promise<void>}
+ */
 async function copyEntrypointModuleClosure(rootDir, stageDir, entrypointRelPath) {
   const parts = entrypointRelPath.split("/");
   const workspace = parts.slice(0, 2).join("/");
@@ -278,6 +343,11 @@ async function copyEntrypointModuleClosure(rootDir, stageDir, entrypointRelPath)
   }
 }
 
+/**
+ * Normalize a Docker `TARGETARCH` / Node architecture value into platform identifiers and foreign tokens to prune.
+ * @param {string} [targetArch]
+ * @returns {{ nodeArch: string, rustArch: string, foreignTokens: string[] }}
+ */
 function normalizeArch(targetArch) {
   const raw = (targetArch || process.arch).toLowerCase();
   if (raw === "amd64" || raw === "x64" || raw === "x86_64") {
@@ -297,6 +367,35 @@ function normalizeArch(targetArch) {
   throw new Error(`Unsupported container target architecture: ${targetArch}`);
 }
 
+/**
+ * Recursively remove `prebuilds/<platform>` subdirectories that do not match `linux-${nodeArch}`.
+ * @param {string} dir
+ * @param {string} nodeArch
+ * @returns {Promise<void>}
+ */
+async function prunePrebuildsInTree(dir, nodeArch) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    const fullPath = join(dir, entry.name);
+    if (!entry.isDirectory()) continue;
+    if (entry.name === "prebuilds") {
+      for (const sub of await readdir(fullPath, { withFileTypes: true })) {
+        if (sub.name !== `linux-${nodeArch}`) {
+          await rm(join(fullPath, sub.name), { recursive: true, force: true });
+        }
+      }
+      continue;
+    }
+    await prunePrebuildsInTree(fullPath, nodeArch);
+  }
+}
+
+/**
+ * Prune foreign-OS and foreign-architecture native binaries from the staged `node_modules` tree.
+ * @param {string} stageDir
+ * @param {string} targetArch
+ * @returns {Promise<void>}
+ */
 async function pruneForeignPlatformArtifacts(stageDir, targetArch) {
   const { nodeArch, rustArch, foreignTokens } = normalizeArch(targetArch);
   const nodeModulesDir = join(stageDir, "node_modules");
@@ -322,26 +421,14 @@ async function pruneForeignPlatformArtifacts(stageDir, targetArch) {
     }
   }
 
-  async function prunePrebuilds(dir) {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) continue;
-      const fullPath = join(dir, entry.name);
-      if (!entry.isDirectory()) continue;
-      if (entry.name === "prebuilds") {
-        for (const sub of await readdir(fullPath, { withFileTypes: true })) {
-          if (sub.name !== `linux-${nodeArch}`) {
-            await rm(join(fullPath, sub.name), { recursive: true, force: true });
-          }
-        }
-        continue;
-      }
-      await prunePrebuilds(fullPath);
-    }
-  }
-
-  await prunePrebuilds(nodeModulesDir);
+  await prunePrebuildsInTree(stageDir, nodeArch);
 }
 
+/**
+ * Extract all bare module specifiers imported or re-exported by a compiled JavaScript file.
+ * @param {string} jsFilePath
+ * @returns {Promise<string[]>}
+ */
 async function collectBareSpecifiers(jsFilePath) {
   const source = await readFile(jsFilePath, "utf8");
   const specifiers = new Set();
@@ -357,27 +444,39 @@ async function collectBareSpecifiers(jsFilePath) {
   return [...specifiers];
 }
 
+/**
+ * Recursively collect compiled first-party `.js` and `.mjs` files inside `stageDir`, skipping `node_modules`, web assets, and skills.
+ * @param {string} stageDir
+ * @param {string} dir
+ * @param {string[]} jsFiles
+ * @returns {Promise<void>}
+ */
+async function collectStagedFirstPartyJsFiles(stageDir, dir, jsFiles) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.name === "node_modules") continue;
+    const full = join(dir, entry.name);
+    const rel = relative(stageDir, full).replace(/\\/g, "/");
+    if (rel === "apps/web/dist" || rel.startsWith("apps/web/dist/")) continue;
+    if (rel === "agent-skills" || rel.startsWith("agent-skills/")) continue;
+    if (entry.isDirectory()) {
+      await collectStagedFirstPartyJsFiles(stageDir, full, jsFiles);
+    } else if (entry.isFile() && /\.(?:m?js)$/.test(entry.name)) {
+      jsFiles.push(full);
+    }
+  }
+}
+
+/**
+ * Verify that all bare module specifiers imported by staged first-party JS files resolve within `stageDir`.
+ * @param {string} stageDir
+ * @param {readonly string[]} [excludedDependencies]
+ * @returns {Promise<void>}
+ */
 async function verifyStagedResolution(stageDir, excludedDependencies = []) {
   const excluded = new Set(excludedDependencies);
   const jsFiles = [];
-
-  async function walk(dir) {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) continue;
-      const full = join(dir, entry.name);
-      const rel = relative(stageDir, full);
-      if (rel === "node_modules" || rel.startsWith("node_modules/")) continue;
-      if (rel === "apps/web/dist" || rel.startsWith("apps/web/dist/")) continue;
-      if (rel === "agent-skills" || rel.startsWith("agent-skills/")) continue;
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else if (entry.isFile() && /\.(?:m?js)$/.test(entry.name)) {
-        jsFiles.push(full);
-      }
-    }
-  }
-
-  await walk(stageDir);
+  await collectStagedFirstPartyJsFiles(stageDir, stageDir, jsFiles);
 
   const unresolved = [];
   for (const file of jsFiles) {
@@ -404,6 +503,11 @@ async function verifyStagedResolution(stageDir, excludedDependencies = []) {
   }
 }
 
+/**
+ * Stage the runtime filesystem tree for a single container target (`core`, `browser`, or `cli`).
+ * @param {{ rootDir?: string, outRootDir: string, target: string, targetArch?: string }} options
+ * @returns {Promise<{ target: string, stageDir: string, workspaces: readonly string[], packageCount: number }>}
+ */
 export async function prepareContainerTarget({
   rootDir = process.cwd(),
   outRootDir,
@@ -429,15 +533,17 @@ export async function prepareContainerTarget({
     await copyEntrypointModuleClosure(rootDir, stageDir, entrypointModule);
   }
 
-  const topLevelPackages = await collectDependencyClosure(
+  const stagedPackages = await collectDependencyClosure(
     rootDir,
     manifest.workspaces,
     manifest.seedDependencies,
-    manifest.excludeDependencies
+    manifest.excludeDependencies,
+    manifest.entrypointModules
   );
-  for (const relPkg of topLevelPackages) {
-    const srcPkg = join(rootDir, "node_modules", relPkg);
-    const dstPkg = join(stageDir, "node_modules", relPkg);
+  for (const relPkgDir of stagedPackages) {
+    const srcPkg = join(rootDir, relPkgDir);
+    const dstPkg = join(stageDir, relPkgDir);
+    if (await pathExists(dstPkg)) continue;
     await mkdir(dirname(dstPkg), { recursive: true });
     await cp(srcPkg, dstPkg, { recursive: true, verbatimSymlinks: true });
   }
@@ -467,10 +573,15 @@ export async function prepareContainerTarget({
     target,
     stageDir,
     workspaces: manifest.workspaces,
-    packageCount: topLevelPackages.length
+    packageCount: stagedPackages.length
   };
 }
 
+/**
+ * Stage the runtime filesystem trees for all requested container targets.
+ * @param {{ rootDir?: string, outRootDir?: string, targetArch?: string, targets?: string[] }} [options]
+ * @returns {Promise<Array<{ target: string, stageDir: string, workspaces: readonly string[], packageCount: number }>>}
+ */
 export async function prepareAllContainerTargets({
   rootDir = process.cwd(),
   outRootDir = join(rootDir, "deploy", "container-targets"),
@@ -491,6 +602,11 @@ export async function prepareAllContainerTargets({
   return results;
 }
 
+/**
+ * Parse CLI arguments for `prepare-container-targets.mjs`.
+ * @param {string[]} argv
+ * @returns {{ rootDir: string, outRootDir: string, targetArch: string, targets: string[] }}
+ */
 function parseArgs(argv) {
   let rootDir = process.cwd();
   let outRootDir = null;
@@ -527,7 +643,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const summaries = await prepareAllContainerTargets(options);
   for (const summary of summaries) {
     process.stdout.write(
-      `Prepared container target ${summary.target}: ${summary.workspaces.length} workspaces, ${summary.packageCount} top-level packages -> ${summary.stageDir}\n`
+      `Prepared container target ${summary.target}: ${summary.workspaces.length} workspaces, ${summary.packageCount} staged packages -> ${summary.stageDir}\n`
     );
   }
 }

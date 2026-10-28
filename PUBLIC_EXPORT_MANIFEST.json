@@ -7,9 +7,9 @@
   "files": [
     {
       "path": ".github/workflows/containers.yml",
-      "sourceObjectId": "8189ebb27008531413fbb2f4480e2bd26d3cdb4f",
-      "sha256": "3b981bd860e515c3e295d5336bf4202b52e15ff5c27e08ab53877631a99879e7",
-      "size": 10497
+      "sourceObjectId": "32bc7322a24f6accccda54d233530268b79a96a4",
+      "sha256": "71c510627c7dae39a65d6a739bee17eb5ca4573459336ee0d78d982915836f28",
+      "size": 10548
     },
     {
       "path": ".gitignore",
@@ -23341,9 +23341,9 @@
     },
     {
       "path": "deploy/docker/prepare-container-targets.mjs",
-      "sourceObjectId": "f740e859ecb173a2ab481249bd313260a14ba6fd",
-      "sha256": "3a86622aea7832c82654e9e981249a93ef2885085ba474261d38d3e9e17de55c",
-      "size": 17144
+      "sourceObjectId": "2bdd77127095ef4ea5013776f991b1fd61fffcf6",
+      "sha256": "d2e046b15e899516a2c8a1c882242c13f4a912f44b73ad630a81a3b04236e68d",
+      "size": 21213
     },
     {
       "path": "Dockerfile",
@@ -29605,9 +29605,9 @@
     },
     {
       "path": "scripts/container-image-size-budget.mjs",
-      "sourceObjectId": "a47a00f81028b3b45b895d551b914aff5d0bb193",
-      "sha256": "e718416cee59a695d830e2d9d6877df1d6d61e8d6f17b80bdc13ffa2471ee3c6",
-      "size": 2923
+      "sourceObjectId": "1fca98d0ca54f74ca3bf5ae1c57ab6c112db8e33",
+      "sha256": "f2f7aff5147eaf241a1f4a3f1fe4234625b2c1a22235a1ed52b133f42250a09a",
+      "size": 3672
     },
     {
       "path": "scripts/contributor-smoke.mjs",
@@ -29671,9 +29671,9 @@
     },
     {
       "path": "scripts/tests/public-docker-distribution.test.mjs",
-      "sourceObjectId": "5acda8828be99a9f47ee5c17bba68158870b0428",
-      "sha256": "52c3ca5307c18b3c463cbeb5472202c9afd0e7a6dc6e9bfadb74f51471e5259c",
-      "size": 22392
+      "sourceObjectId": "bd81f158d13ea2d793765d96717daaf3b96dfe0c",
+      "sha256": "3a17311664cc7cbaa0f91772557e0ce6e889153a504d495a8a4b1e8826d69b26",
+      "size": 27683
     },
     {
       "path": "scripts/tests/quality-known-limitations.test.mjs",

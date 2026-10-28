@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -375,4 +375,138 @@ test("Dockerfile stages per-service dependency closures instead of copying the f
     "apps/api/dist/browser-host-main.js"
   ]);
   assert.ok(containerTargetManifest.core.excludeDependencies.includes("node-pty"));
+});
+
+test("per-service container staging preserves workspace-nested node_modules versions", async () => {
+  const { collectDependencyClosure, prepareContainerTarget } = await import(
+    "../../deploy/docker/prepare-container-targets.mjs"
+  );
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "spaceapp-stage-nested-"));
+  const outRoot = join(fixtureRoot, "out");
+  try {
+    const writeJson = async (relPath, data) => {
+      const fullPath = join(fixtureRoot, relPath);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, JSON.stringify(data, null, 2));
+    };
+    const writeJs = async (relPath, code) => {
+      const fullPath = join(fixtureRoot, relPath);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, code);
+    };
+
+    await writeJson("package.json", { name: "spaceapp-fixture", private: true });
+    // Root hoisted packages (older versions required by transitive deps)
+    await writeJson("node_modules/nanoid/package.json", {
+      name: "nanoid",
+      version: "3.3.20",
+      main: "index.js"
+    });
+    await writeJs("node_modules/nanoid/index.js", "export const nanoid = () => \"v3\";\n");
+    await writeJson("node_modules/protobufjs/package.json", {
+      name: "protobufjs",
+      version: "7.6.5",
+      main: "index.js"
+    });
+    await writeJs("node_modules/protobufjs/index.js", "export default {};\n");
+    await writeJson("node_modules/postcss/package.json", {
+      name: "postcss",
+      version: "8.4.0",
+      main: "index.js",
+      dependencies: { nanoid: "^3.3.11" }
+    });
+    await writeJs("node_modules/postcss/index.js", "export default {};\n");
+    await writeJson("node_modules/@t3-oss/env-core/package.json", {
+      name: "@t3-oss/env-core",
+      version: "0.11.0",
+      main: "index.js"
+    });
+    await writeJs("node_modules/@t3-oss/env-core/index.js", "export default {};\n");
+    await writeJson("node_modules/zod/package.json", {
+      name: "zod",
+      version: "3.24.0",
+      main: "index.js"
+    });
+    await writeJs("node_modules/zod/index.js", "export default {};\n");
+
+    // Workspace-nested packages with newer versions
+    await writeJson("apps/api/node_modules/nanoid/package.json", {
+      name: "nanoid",
+      version: "5.1.16",
+      main: "index.js"
+    });
+    await writeJs("apps/api/node_modules/nanoid/index.js", "export const nanoid = () => \"v5\";\n");
+    await writeJson("packages/runtime/node_modules/nanoid/package.json", {
+      name: "nanoid",
+      version: "5.1.16",
+      main: "index.js"
+    });
+    await writeJs("packages/runtime/node_modules/nanoid/index.js", "export const nanoid = () => \"v5\";\n");
+    await writeJson("packages/streaming/node_modules/protobufjs/package.json", {
+      name: "protobufjs",
+      version: "8.8.0",
+      main: "index.js"
+    });
+    await writeJs("packages/streaming/node_modules/protobufjs/index.js", "export default {};\n");
+
+    // Workspaces required by browser target + streaming for closure check
+    await writeJson("apps/api/package.json", {
+      name: "@space/api",
+      type: "module",
+      dependencies: { nanoid: "^5.1.5", postcss: "^8.4.0" }
+    });
+    await writeJs(
+      "apps/api/dist/browser-host-main.js",
+      "import { nanoid } from \"nanoid\";\nexport const id = nanoid();\n"
+    );
+    for (const ws of ["packages/browser-host", "packages/contracts", "packages/db", "packages/memory-graph"]) {
+      await writeJson(`${ws}/package.json`, {
+        name: `@space/${ws.split("/")[1]}`,
+        type: "module",
+        dependencies: {}
+      });
+      await writeJs(`${ws}/dist/index.js`, "export const ok = true;\n");
+    }
+    await writeJson("packages/runtime/package.json", {
+      name: "@space/runtime",
+      type: "module",
+      dependencies: { nanoid: "^5.1.5" }
+    });
+    await writeJs("packages/runtime/dist/index.js", "import { nanoid } from \"nanoid\";\nexport { nanoid };\n");
+    await writeJson("packages/streaming/package.json", {
+      name: "@space/streaming",
+      type: "module",
+      dependencies: { protobufjs: "^8.0.0" }
+    });
+    await writeJs("packages/streaming/dist/index.js", "import protobuf from \"protobufjs\";\nexport { protobuf };\n");
+
+    const closure = await collectDependencyClosure(
+      fixtureRoot,
+      ["apps/api", "packages/runtime", "packages/streaming"],
+      [],
+      []
+    );
+    assert.ok(closure.includes("apps/api/node_modules/nanoid"));
+    assert.ok(closure.includes("packages/runtime/node_modules/nanoid"));
+    assert.ok(closure.includes("packages/streaming/node_modules/protobufjs"));
+    assert.ok(closure.includes("node_modules/nanoid"));
+
+    await prepareContainerTarget({
+      rootDir: fixtureRoot,
+      outRootDir: outRoot,
+      target: "browser",
+      targetArch: "amd64"
+    });
+
+    const stagedApiNanoid = JSON.parse(
+      await readFile(join(outRoot, "browser/apps/api/node_modules/nanoid/package.json"), "utf8")
+    );
+    const stagedRuntimeNanoid = JSON.parse(
+      await readFile(join(outRoot, "browser/packages/runtime/node_modules/nanoid/package.json"), "utf8")
+    );
+    assert.equal(stagedApiNanoid.version, "5.1.16");
+    assert.equal(stagedRuntimeNanoid.version, "5.1.16");
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
 });
