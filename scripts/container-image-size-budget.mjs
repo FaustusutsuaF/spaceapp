@@ -26,6 +26,22 @@ export const containerImageSizeBudgets = Object.freeze({
 });
 
 /**
+ * Recorded uncompressed Docker image sizes in bytes for both supported target architectures (`linux/amd64` and `linux/arm64`).
+ */
+export const containerImageSizeMeasurements = Object.freeze({
+  "linux/amd64": Object.freeze({
+    core: 785796740,
+    browser: 1138549184,
+    cli: 669226218
+  }),
+  "linux/arm64": Object.freeze({
+    core: 819042739,
+    browser: 1169602558,
+    cli: 702410611
+  })
+});
+
+/**
  * Evaluate whether a container image's size in bytes fits within the configured budget for `target`.
  * @param {{ target: string, sizeBytes: number, budgets?: Record<string, number> }} options
  * @returns {{ target: string, sizeBytes: number, budgetBytes: number, remainingBytes: number, sizeFormatted: string, budgetFormatted: string, ok: boolean }}

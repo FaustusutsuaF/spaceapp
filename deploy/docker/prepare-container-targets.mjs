@@ -8,7 +8,7 @@ import {
   rm,
   symlink
 } from "node:fs/promises";
-import { builtinModules, createRequire } from "node:module";
+import { builtinModules } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -473,25 +473,21 @@ async function collectStagedFirstPartyJsFiles(stageDir, dir, jsFiles) {
  * @param {readonly string[]} [excludedDependencies]
  * @returns {Promise<void>}
  */
-async function verifyStagedResolution(stageDir, excludedDependencies = []) {
+export async function verifyStagedResolution(stageDir, excludedDependencies = []) {
   const excluded = new Set(excludedDependencies);
   const jsFiles = [];
   await collectStagedFirstPartyJsFiles(stageDir, stageDir, jsFiles);
 
   const unresolved = [];
   for (const file of jsFiles) {
-    const req = createRequire(file);
     const specifiers = await collectBareSpecifiers(file);
     for (const spec of specifiers) {
+      if (spec.startsWith("#")) continue;
       const pkgName = packageNameFromSpecifier(spec);
       if (excluded.has(spec) || excluded.has(pkgName)) continue;
-      try {
-        req.resolve(spec);
-      } catch {
-        const pkgDir = await resolvePackageDir(stageDir, pkgName, [dirname(file), stageDir]);
-        if (!pkgDir) {
-          unresolved.push(`${relative(stageDir, file)} -> ${spec}`);
-        }
+      const pkgDir = await resolvePackageDir(stageDir, pkgName, [dirname(file)]);
+      if (!pkgDir) {
+        unresolved.push(`${relative(stageDir, file)} -> ${spec}`);
       }
     }
   }

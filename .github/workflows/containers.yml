@@ -158,7 +158,7 @@ jobs:
             pgvector/pgvector:pg17
 
           for attempt in $(seq 1 30); do
-            if docker exec "$PG" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+            if docker exec "$PG" pg_isready -h 127.0.0.1 -U spaceapp -d spaceapp >/dev/null 2>&1; then
               break
             fi
             sleep 1
@@ -220,7 +220,7 @@ jobs:
             pgvector/pgvector:pg17
 
           for attempt in $(seq 1 30); do
-            if docker exec "$PG" pg_isready -U spaceapp -d spaceapp >/dev/null 2>&1; then
+            if docker exec "$PG" pg_isready -h 127.0.0.1 -U spaceapp -d spaceapp >/dev/null 2>&1; then
               break
             fi
             sleep 1
@@ -263,3 +263,232 @@ jobs:
           done
           docker logs "$CONTAINER" >&2 || true
           exit 1
+      - name: Export amd64 image archive for full-stack launcher verification
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          docker save -o "/tmp/spaceapp-ci-${{ matrix.target }}-amd64.tar" "spaceapp-ci:${{ matrix.target }}-amd64"
+      - name: Upload amd64 image archive
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: container-image-${{ matrix.target }}-amd64
+          path: /tmp/spaceapp-ci-${{ matrix.target }}-amd64.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  launcher-full-stack:
+    name: Verify launcher full-stack standard profile
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22.23.0
+          cache: npm
+      - name: Create sanitized public export
+        run: |
+          rm -rf /tmp/spaceapp-public
+          node scripts/public-export.mjs /tmp/spaceapp-public
+          node scripts/public-export.mjs --verify-dir /tmp/spaceapp-public
+      - name: Download built amd64 container images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: container-image-*-amd64
+          path: /tmp/container-images
+          merge-multiple: true
+      - name: Load local amd64 images and verify launcher full-stack integration
+        working-directory: /tmp/spaceapp-public
+        run: |
+          set -euo pipefail
+          RUNTIME_VERSION="$(node -p "JSON.parse(fs.readFileSync('packages/run-spaceapp/package.json', 'utf8')).spaceapp.runtimeVersion")"
+          for target in core browser cli; do
+            docker load -i "/tmp/container-images/spaceapp-ci-${target}-amd64.tar"
+            docker tag "spaceapp-ci:${target}-amd64" "ghcr.io/oll4com/spaceapp-${target}:${RUNTIME_VERSION}"
+            rm -f "/tmp/container-images/spaceapp-ci-${target}-amd64.tar"
+          done
+
+          POSTGRES_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(pgvector\/pgvector:[^[:space:]]*\)$/\1/p' packages/run-spaceapp/templates/compose.yml)"
+          TEMPORAL_IMAGE="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(temporalio\/auto-setup:[^[:space:]]*\)$/\1/p' packages/run-spaceapp/templates/compose.yml)"
+          docker pull "$POSTGRES_IMAGE"
+          docker pull "$TEMPORAL_IMAGE"
+
+          export SPACEAPP_HOME="$(mktemp -d)"
+          ANSWERS_FILE="$(mktemp)"
+          cleanup() {
+            docker compose --project-directory "$SPACEAPP_HOME" -f "$SPACEAPP_HOME/compose.yml" --env-file "$SPACEAPP_HOME/.env" --profile standard down -v --remove-orphans >/dev/null 2>&1 || true
+            rm -rf "$SPACEAPP_HOME" "$ANSWERS_FILE"
+          }
+          trap cleanup EXIT
+
+          cat > "$ANSWERS_FILE" <<'EOF'
+          {
+            "deployment": "local",
+            "profile": "standard",
+            "cliAccess": "isolated"
+          }
+          EOF
+
+          SPACEAPP_IMAGE_VERIFY=off node packages/run-spaceapp/bin/spaceapp.mjs \
+            --local-images \
+            --non-interactive \
+            --answers="$ANSWERS_FILE" \
+            install \
+            --profile standard \
+            --access isolated \
+            --no-open
+
+          SETUP_TOKEN="$(tr -d '\r\n' < "$SPACEAPP_HOME/secrets/setup-token")"
+          export SETUP_TOKEN
+          node --input-type=module - <<'EOF'
+          const baseUrl = "http://127.0.0.1:4911";
+          const setupToken = process.env.SETUP_TOKEN;
+          if (!setupToken) {
+            throw new Error("Missing setup token from SPACEAPP_HOME/secrets/setup-token");
+          }
+
+          const readyRes = await fetch(`${baseUrl}/readyz`);
+          const readyBody = await readyRes.json();
+          if (!readyRes.ok || readyBody.ok !== true) {
+            throw new Error(`Unexpected /readyz response: ${readyRes.status} ${JSON.stringify(readyBody)}`);
+          }
+
+          const claimRes = await fetch(`${baseUrl}/api/setup/claim`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              origin: baseUrl
+            },
+            body: JSON.stringify({
+              token: setupToken,
+              email: "owner@example.com",
+              password: "ComplexPassword!23456"
+            })
+          });
+          const claimText = await claimRes.text();
+          if (!claimRes.ok) {
+            throw new Error(`Owner setup claim failed (${claimRes.status}): ${claimText}`);
+          }
+          const setCookies = typeof claimRes.headers.getSetCookie === "function"
+            ? claimRes.headers.getSetCookie()
+            : [claimRes.headers.get("set-cookie")].filter(Boolean);
+          const sessionCookie = setCookies
+            .map((cookie) => cookie.split(";")[0])
+            .find((cookie) => cookie.startsWith("space_session="));
+          if (!sessionCookie) {
+            throw new Error("Missing space_session cookie after /api/setup/claim");
+          }
+
+          const csrfRes = await fetch(`${baseUrl}/api/auth/csrf`, {
+            headers: { cookie: sessionCookie }
+          });
+          const csrfText = await csrfRes.text();
+          if (!csrfRes.ok) {
+            throw new Error(`CSRF token fetch failed (${csrfRes.status}): ${csrfText}`);
+          }
+          const { csrfToken, headerName } = JSON.parse(csrfText);
+          if (!csrfToken || !headerName) {
+            throw new Error(`Invalid CSRF payload: ${csrfText}`);
+          }
+
+          const authHeaders = {
+            "content-type": "application/json",
+            cookie: sessionCookie,
+            origin: baseUrl,
+            [headerName]: csrfToken
+          };
+
+          const claim = JSON.parse(claimText);
+          let roomId = claim.starterRoomId;
+          if (!roomId) {
+            const starterRes = await fetch(`${baseUrl}/api/setup/starter-room`, {
+              method: "POST",
+              headers: {
+                cookie: sessionCookie,
+                origin: baseUrl,
+                [headerName]: csrfToken
+              }
+            });
+            const starterText = await starterRes.text();
+            if (!starterRes.ok) {
+              throw new Error(`Starter room creation failed (${starterRes.status}): ${starterText}`);
+            }
+            roomId = JSON.parse(starterText).room.id;
+          }
+
+          const createCliPaneRes = await fetch(`${baseUrl}/api/panes`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({
+              roomId,
+              title: "OpenCode Smoke",
+              mode: "TERMINAL",
+              terminalRuntimeId: "cli:opencode"
+            })
+          });
+          const createCliPaneText = await createCliPaneRes.text();
+          if (!createCliPaneRes.ok) {
+            throw new Error(`CLI pane creation failed (${createCliPaneRes.status}): ${createCliPaneText}`);
+          }
+          const cliPane = JSON.parse(createCliPaneText);
+
+          const startCliRes = await fetch(`${baseUrl}/api/panes/${encodeURIComponent(cliPane.id)}/cli/session`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({ runtimeId: "cli:opencode" })
+          });
+          const startCliText = await startCliRes.text();
+          if (!startCliRes.ok) {
+            throw new Error(`CLI session start failed (${startCliRes.status}): ${startCliText}`);
+          }
+          const cliSession = JSON.parse(startCliText);
+          if (cliSession?.session?.runtimeId !== "cli:opencode" || cliSession?.session?.isActive !== true) {
+            throw new Error(`Unexpected CLI session payload: ${startCliText}`);
+          }
+
+          const createBrowserPaneRes = await fetch(`${baseUrl}/api/panes`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({
+              roomId,
+              title: "Browser Smoke",
+              mode: "BROWSER"
+            })
+          });
+          const createBrowserPaneText = await createBrowserPaneRes.text();
+          if (!createBrowserPaneRes.ok) {
+            throw new Error(`Browser pane creation failed (${createBrowserPaneRes.status}): ${createBrowserPaneText}`);
+          }
+          const browserPane = JSON.parse(createBrowserPaneText);
+
+          const startBrowserRes = await fetch(`${baseUrl}/api/panes/${encodeURIComponent(browserPane.id)}/browser/session`, {
+            method: "POST",
+            headers: authHeaders,
+            body: JSON.stringify({
+              viewport: "desktop",
+              includeInitialFrame: true
+            })
+          });
+          const startBrowserText = await startBrowserRes.text();
+          if (!startBrowserRes.ok) {
+            throw new Error(`Browser session start failed (${startBrowserRes.status}): ${startBrowserText}`);
+          }
+          const browserSession = JSON.parse(startBrowserText);
+          if (!browserSession?.session?.sessionId || browserSession?.session?.isActive !== true) {
+            throw new Error(`Unexpected browser session payload: ${startBrowserText}`);
+          }
+
+          console.log(
+            JSON.stringify({
+              ok: true,
+              roomId,
+              cliSessionId: cliSession.session.sessionId,
+              browserSessionId: browserSession.session.sessionId
+            })
+          );
+          EOF

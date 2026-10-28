@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   containerImageSizeBudgets,
+  containerImageSizeMeasurements,
   evaluateContainerImageSize
 } from "../container-image-size-budget.mjs";
 
@@ -13,6 +14,40 @@ test("public container size budgets preserve the lightweight release ceilings", 
     browser: 1180 * mebibyte,
     cli: 730 * mebibyte
   });
+});
+
+test("recorded linux/amd64 and linux/arm64 image measurements stay within target budgets", () => {
+  const expectedMeasurements = {
+    "linux/amd64": {
+      core: { sizeBytes: 785796740, sizeFormatted: "749.4 MiB" },
+      browser: { sizeBytes: 1138549184, sizeFormatted: "1085.8 MiB" },
+      cli: { sizeBytes: 669226218, sizeFormatted: "638.2 MiB" }
+    },
+    "linux/arm64": {
+      core: { sizeBytes: 819042739, sizeFormatted: "781.1 MiB" },
+      browser: { sizeBytes: 1169602558, sizeFormatted: "1115.4 MiB" },
+      cli: { sizeBytes: 702410611, sizeFormatted: "669.9 MiB" }
+    }
+  };
+
+  assert.deepEqual(
+    Object.keys(containerImageSizeMeasurements),
+    Object.keys(expectedMeasurements)
+  );
+  for (const [architecture, targets] of Object.entries(expectedMeasurements)) {
+    assert.deepEqual(
+      Object.keys(containerImageSizeMeasurements[architecture]),
+      Object.keys(targets)
+    );
+    for (const [target, expected] of Object.entries(targets)) {
+      const sizeBytes = containerImageSizeMeasurements[architecture][target];
+      assert.equal(sizeBytes, expected.sizeBytes);
+      const evaluation = evaluateContainerImageSize({ target, sizeBytes });
+      assert.equal(evaluation.ok, true, `${architecture} ${target} exceeded budget`);
+      assert.equal(evaluation.sizeFormatted, expected.sizeFormatted);
+      assert.ok(evaluation.remainingBytes > 0);
+    }
+  }
 });
 
 test("container size budget accepts an image exactly at its target ceiling", () => {

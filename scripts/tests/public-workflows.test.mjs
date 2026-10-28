@@ -52,6 +52,15 @@ test("launcher and container matrices cover the declared operating systems and a
   assert.match(containers, /- amd64/);
   assert.match(containers, /- arm64/);
   assert.match(containers, /push: false/);
+  assert.match(containers, /pg_isready -h 127\.0\.0\.1 -U spaceapp -d spaceapp/);
+  assert.match(containers, /launcher-full-stack:/);
+  assert.match(containers, /needs: build/);
+  assert.match(
+    containers,
+    /SPACEAPP_IMAGE_VERIFY=off node packages\/run-spaceapp\/bin\/spaceapp\.mjs[\s\S]*--local-images[\s\S]*install[\s\S]*--profile standard/
+  );
+  assert.match(containers, /\/api\/panes\/\$\{encodeURIComponent\(cliPane\.id\)\}\/cli\/session/);
+  assert.match(containers, /\/api\/panes\/\$\{encodeURIComponent\(browserPane\.id\)\}\/browser\/session/);
 });
 
 test("launcher-only source and workflow changes cannot trigger the container matrix", async () => {

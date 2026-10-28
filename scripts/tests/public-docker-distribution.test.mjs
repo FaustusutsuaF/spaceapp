@@ -378,7 +378,7 @@ test("Dockerfile stages per-service dependency closures instead of copying the f
 });
 
 test("per-service container staging preserves workspace-nested node_modules versions", async () => {
-  const { collectDependencyClosure, prepareContainerTarget } = await import(
+  const { collectDependencyClosure, prepareContainerTarget, verifyStagedResolution } = await import(
     "../../deploy/docker/prepare-container-targets.mjs"
   );
   const fixtureRoot = await mkdtemp(join(tmpdir(), "spaceapp-stage-nested-"));
@@ -506,6 +506,15 @@ test("per-service container staging preserves workspace-nested node_modules vers
     );
     assert.equal(stagedApiNanoid.version, "5.1.16");
     assert.equal(stagedRuntimeNanoid.version, "5.1.16");
+
+    await writeFile(
+      join(outRoot, "browser/apps/api/dist/browser-host-main.js"),
+      "import protobuf from \"protobufjs\";\nexport { protobuf };\n"
+    );
+    await assert.rejects(
+      () => verifyStagedResolution(join(outRoot, "browser")),
+      /has unresolved runtime imports:[\s\S]*protobufjs/
+    );
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true });
   }
