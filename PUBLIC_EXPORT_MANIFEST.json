@@ -23347,9 +23347,9 @@
     },
     {
       "path": "Dockerfile",
-      "sourceObjectId": "72f0ee2386f04525df94a7ec0c09f1f56744f088",
-      "sha256": "02fe485bc16ac26a6b1fdf7d19b15678f3598d7fe7f6d5585d8a4fa7a906242e",
-      "size": 7979
+      "sourceObjectId": "2c752d92fe031d95f76d5deab442da651725cc55",
+      "sha256": "5fcc2d51104fd6967f89ecf817a504c731a85ddb3ee855a23a779a0b2b16696d",
+      "size": 7984
     },
     {
       "path": "docs/architecture.md",
@@ -29605,9 +29605,9 @@
     },
     {
       "path": "scripts/container-image-size-budget.mjs",
-      "sourceObjectId": "1fca98d0ca54f74ca3bf5ae1c57ab6c112db8e33",
-      "sha256": "f2f7aff5147eaf241a1f4a3f1fe4234625b2c1a22235a1ed52b133f42250a09a",
-      "size": 3672
+      "sourceObjectId": "5b5479ff39e76b792046376ce27fd44318fdc3ae",
+      "sha256": "c86496826c5aec375ce505cc9de87f9b9194ae84a081a4627be5309fb921ee89",
+      "size": 5093
     },
     {
       "path": "scripts/contributor-smoke.mjs",
@@ -29653,9 +29653,9 @@
     },
     {
       "path": "scripts/tests/container-image-size-budget.test.mjs",
-      "sourceObjectId": "8cc9771d64fc295d118be6e0ac1e51089dd99561",
-      "sha256": "9904280de2a126a7780563ef747d2354d609be35fdafdff6e76c5d42e43a4553",
-      "size": 1365
+      "sourceObjectId": "54ae107cedfa9b9de574801423d48cd0d67e2890",
+      "sha256": "418b867182d8778700d8b7f7677d42e6f5a8fad7120db0bbeb53782da906c658",
+      "size": 1524
     },
     {
       "path": "scripts/tests/contributor-smoke.test.mjs",

@@ -2,42 +2,54 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   containerImageSizeBudgets,
-  evaluateImageSize,
-  formatMebibytes
+  evaluateContainerImageSize
 } from "../container-image-size-budget.mjs";
 
 const mebibyte = 1024 * 1024;
 
-test("public container targets declare explicit size budgets", () => {
-  assert.equal(containerImageSizeBudgets.core, 850 * mebibyte);
-  assert.equal(containerImageSizeBudgets.browser, 1350 * mebibyte);
-  assert.equal(containerImageSizeBudgets.cli, 1000 * mebibyte);
+test("public container size budgets preserve the lightweight release ceilings", () => {
+  assert.deepEqual(containerImageSizeBudgets, {
+    core: 830 * mebibyte,
+    browser: 1180 * mebibyte,
+    cli: 730 * mebibyte
+  });
 });
 
-test("budget evaluation accepts images at or under budget and rejects regressions", () => {
-  const within = evaluateImageSize({
-    target: "core",
-    sizeBytes: 750 * mebibyte
-  });
-  assert.equal(within.ok, true);
-  assert.equal(within.sizeFormatted, "750.0 MiB");
-  assert.equal(within.budgetFormatted, "850.0 MiB");
-
-  const over = evaluateImageSize({
-    target: "cli",
-    sizeBytes: 1001 * mebibyte
-  });
-  assert.equal(over.ok, false);
-  assert.equal(formatMebibytes(over.sizeBytes - over.budgetBytes), "1.0 MiB");
-});
-
-test("budget evaluation rejects unknown targets and invalid sizes", () => {
-  assert.throws(
-    () => evaluateImageSize({ target: "desktop", sizeBytes: 100 * mebibyte }),
-    /Unknown container image target/
+test("container size budget accepts an image exactly at its target ceiling", () => {
+  assert.deepEqual(
+    evaluateContainerImageSize({
+      target: "cli",
+      sizeBytes: containerImageSizeBudgets.cli
+    }),
+    {
+      target: "cli",
+      sizeBytes: containerImageSizeBudgets.cli,
+      budgetBytes: containerImageSizeBudgets.cli,
+      remainingBytes: 0,
+      sizeFormatted: "730.0 MiB",
+      budgetFormatted: "730.0 MiB",
+      ok: true
+    }
   );
+});
+
+test("container size budget blocks an image one byte over its target ceiling", () => {
+  const sizeBytes = containerImageSizeBudgets.core + 1;
+
+  assert.deepEqual(evaluateContainerImageSize({ target: "core", sizeBytes }), {
+    target: "core",
+    sizeBytes,
+    budgetBytes: containerImageSizeBudgets.core,
+    remainingBytes: -1,
+    sizeFormatted: "830.0 MiB",
+    budgetFormatted: "830.0 MiB",
+    ok: false
+  });
+});
+
+test("container size budget rejects unknown targets", () => {
   assert.throws(
-    () => evaluateImageSize({ target: "core", sizeBytes: 0 }),
-    /Invalid container image size/
+    () => evaluateContainerImageSize({ target: "unknown", sizeBytes: 1 }),
+    /Unknown container target/
   );
 });
