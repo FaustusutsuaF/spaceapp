@@ -11,6 +11,13 @@
  * request.
  */
 
+/** An OTLP span link, e.g. a continue-as-new run linked to the run it continues. */
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Readonly<Record<string, string | number>>;
+}
+
 export interface ServerSpan {
   traceId: string;
   spanId: string;
@@ -22,6 +29,8 @@ export interface ServerSpan {
   error: boolean;
   /** OTLP span kind; SERVER (2) unless given. Worker activities use INTERNAL (1). */
   kind?: number;
+  /** Optional OTLP span links to other traces or runs. */
+  links?: readonly SpanLink[];
 }
 
 export interface SpanExporterStats {
@@ -66,10 +75,12 @@ export function otlpTracesUrl(value: string | undefined): string | null {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}/v1/traces`;
 }
 
+/** Formats a primitive attribute value in OTLP/HTTP JSON AnyValue shape. */
 function attributeValue(value: string | number) {
   return typeof value === "number" && Number.isInteger(value) ? { intValue: String(value) } : { stringValue: String(value) };
 }
 
+/** Builds an OTLP/HTTP JSON ExportTraceServiceRequest payload for a batch of spans. */
 export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: string) {
   return {
     resourceSpans: [{
@@ -85,6 +96,17 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
           startTimeUnixNano: span.startTimeUnixNano.toString(),
           endTimeUnixNano: span.endTimeUnixNano.toString(),
           attributes: Object.entries(span.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })),
+          ...(span.links?.length
+            ? {
+                links: span.links.map(link => ({
+                  traceId: link.traceId,
+                  spanId: link.spanId,
+                  ...(link.attributes
+                    ? { attributes: Object.entries(link.attributes).map(([key, value]) => ({ key, value: attributeValue(value) })) }
+                    : {})
+                }))
+              }
+            : {}),
           // STATUS_CODE_ERROR or STATUS_CODE_UNSET
           status: { code: span.error ? 2 : 0 }
         }))
@@ -93,6 +115,7 @@ export function otlpTraceRequest(spans: readonly ServerSpan[], serviceName: stri
   };
 }
 
+/** Creates a bounded, non-blocking OTLP/HTTP JSON span exporter for the given service. */
 export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanExporter {
   const url = otlpTracesUrl(options.endpoint);
   if (!url) throw new Error("Invalid OTLP endpoint.");
@@ -122,13 +145,27 @@ export function createOtlpSpanExporter(options: OtlpSpanExporterOptions): SpanEx
   };
   const flush = (): Promise<void> => {
     if (!inFlight) {
-      inFlight = (async () => {
+      // Assign inFlight before the drain starts. With an empty queue the
+      // drain body below would otherwise finish synchronously and clear
+      // inFlight before the assignment stores the promise, leaving a
+      // stale resolved promise that blocks every later flush and silently
+      // stops all further exports. The local `pending` keeps the returned
+      // promise independent of the mutable inFlight field, so an idle
+      // flush still returns a real Promise rather than null.
+      let release: () => void = () => {};
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      inFlight = pending;
+      void (async () => {
         try {
           while (queue.length) await flushOnce();
         } finally {
           inFlight = null;
+          release();
         }
       })();
+      return pending;
     }
     return inFlight;
   };

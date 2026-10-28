@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { roomAgentSupervisorInputSchema } from "@space/contracts";
+import { parseTraceparent, roomAgentSupervisorInputSchema, traceparentForTraceId } from "@space/contracts";
 import { continuationEvidence, discardSupervisorTurn, finishSupervisorTurn, prepareBackgroundContinuation, supervisorTurnState } from "../src/room-background-continuation.js";
 
 import { continuationFixture } from "./room-continuation-fixture.js";
@@ -86,6 +86,18 @@ describe("durable background continuation", () => {
     expect(executor).not.toHaveBeenCalled();
     expect(await supervisorTurnState(item, c.store)).toBe("READY");
   });
+  it("starts a continuation on its own W3C trace and links sourceTraceparent to the source turn", async () => {
+    const c = continuationFixture();
+    const prepared = await prepareBackgroundContinuation(c.input, c.store);
+    if (prepared.state !== "READY") throw Error("Missing continuation");
+    expect(prepared.item.turn.traceId).toBe("trace:bg-test-1");
+    expect(prepared.item.turn.traceparent).toBe(traceparentForTraceId("trace:bg-test-1"));
+    expect(parseTraceparent(prepared.item.turn.traceparent)).toMatchObject({ flags: "01" });
+    expect(prepared.item.turn.sourceTraceparent).toBe(traceparentForTraceId(c.initial.queueItem.turn.traceId));
+    expect(parseTraceparent(prepared.item.turn.sourceTraceparent)?.traceId)
+      .not.toBe(parseTraceparent(prepared.item.turn.traceparent)?.traceId);
+  });
+
   it.each(["OPEN_TYPES", "CONFIGURE_PANE"] as const)("continues %s with the entire request and real results", async (type) => {
     const c = continuationFixture(type);
     const result = await prepareBackgroundContinuation(c.input, c.store);

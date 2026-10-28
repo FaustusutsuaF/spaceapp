@@ -11,6 +11,7 @@ import {
   type FailureCategory
 } from "@space/contracts";
 import type { SpanExporter } from "@space/runtime";
+import { SPAN_CONTEXT_HEADER, decodeSpanContextHeader, type WorkflowSpanContextHeader } from "./workflow-span-context.js";
 import { logIdentifier, workerLog, type WorkerLogValue } from "./worker-log.js";
 import { workerMetrics, type WorkerMetrics } from "./worker-metrics.js";
 
@@ -86,6 +87,7 @@ const nestedKeys = ["turn", "item", "bridge", "input", "turnInput"] as const;
 
 type CorrelationKey = (typeof correlationKeys)[number];
 
+/** Recursively collects safe correlation identifiers from activity arguments. */
 function readCorrelation(value: unknown, into: Partial<Record<CorrelationKey, string>>, depth: number): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const record = value as Record<string, unknown>;
@@ -115,6 +117,7 @@ export function activityCorrelation(args: readonly unknown[]): Record<string, st
   return correlation;
 }
 
+/** Extracts a bounded, safe error code from an unknown activity failure. */
 function errorCodeOf(error: unknown): string {
   const record = error as { code?: unknown; type?: unknown; name?: unknown } | null;
   if (isSafeErrorCode(record?.code)) return record!.code as string;
@@ -127,6 +130,7 @@ function errorCodeOf(error: unknown): string {
   return "ACTIVITY_ERROR";
 }
 
+/** Checks whether a structured activity return value represents a domain failure. */
 function isFailedResult(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && (value as { status?: unknown }).status === "FAILED");
 }
@@ -137,14 +141,18 @@ export interface ObserveActivityDependencies {
   cancelled?: () => boolean;
   /** OTLP export (SPACE_OTEL_EXPORTER_OTLP_ENDPOINT): one span per activity whose input carries a traceparent. */
   spans?: SpanExporter | null;
+  /** The workflow run's span context from the space.span-context header, when the scheduler observed the call. */
+  workflowSpan?: WorkflowSpanContextHeader | null;
 }
 
+/** Extracts the first valid W3C traceparent found in activity arguments. */
 function activityTraceparent(args: readonly unknown[]) {
   const found: Partial<Record<CorrelationKey, string>> = {};
   for (const arg of args) readCorrelation(arg, found, 2);
   return parseTraceparent(found.traceparent);
 }
 
+/** Wraps a single Temporal activity execution with structured logging, metrics, and OTLP span export. */
 export async function observeActivityExecution<T>(
   info: ActivityInfo,
   args: readonly unknown[],
@@ -194,16 +202,33 @@ export async function observeActivityExecution<T>(
       queueMs,
       rssBytes: process.memoryUsage().rss
     });
-    const parent = dependencies.spans ? activityTraceparent(args) : null;
-    if (parent) {
-      dependencies.spans!.record({
+    // Prefer the workflow span the interceptor injected into the Temporal
+    // header (activities nest under their workflow); fall back to the
+    // traceparent the API propagated in the activity input.
+    const workflowSpan = dependencies.workflowSpan ?? null;
+    const parent =
+      workflowSpan && workflowSpan.kind === "parent"
+        ? { traceId: workflowSpan.traceId, parentId: workflowSpan.spanId }
+        : dependencies.spans
+          ? activityTraceparent(args)
+          : null;
+    if (parent && dependencies.spans) {
+      const spanAttributes: Record<string, string | number> = {
+        "space.activity_type": activityType,
+        "space.outcome": outcome,
+        "space.attempt": info.attempt
+      };
+      if (info.workflowType) spanAttributes["space.workflow_type"] = info.workflowType;
+      if (reasonCode) spanAttributes["space.reason_code"] = reasonCode;
+      if (category) spanAttributes["space.category"] = category;
+      dependencies.spans.record({
         traceId: parent.traceId,
         spanId: randomBytes(8).toString("hex"),
         parentSpanId: parent.parentId,
         name: `activity ${activityType}`,
         startTimeUnixNano: BigInt(startedAt) * 1_000_000n,
         endTimeUnixNano: BigInt(startedAt + durationMs) * 1_000_000n,
-        attributes: { "space.activity_type": activityType, "space.outcome": outcome, "space.attempt": info.attempt },
+        attributes: spanAttributes,
         error: outcome === "FAILED" || outcome === "FAILED_RESULT",
         kind: 1
       });
@@ -227,10 +252,12 @@ export async function observeActivityExecution<T>(
 export function createActivityObservabilityInterceptors(dependencies: Omit<ObserveActivityDependencies, "cancelled"> = {}): ActivityInterceptorsFactory {
   return (context) => ({
     inbound: {
-      execute: (input, next) => observeActivityExecution(context.info, input.args, () => next(input), {
-        ...dependencies,
-        cancelled: () => context.cancellationSignal.aborted
-      })
+      execute: (input, next) =>
+        observeActivityExecution(context.info, input.args, () => next(input), {
+          ...dependencies,
+          cancelled: () => context.cancellationSignal.aborted,
+          workflowSpan: decodeSpanContextHeader(input.headers?.[SPAN_CONTEXT_HEADER])
+        })
     }
   });
 }

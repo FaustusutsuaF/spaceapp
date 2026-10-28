@@ -733,6 +733,7 @@ const persistedTranscriptLabeledSecretPattern =
 // \b before "token", so the labeled pattern above misses it). Codex, Claude Code and Oh My Pi all carry this token.
 const persistedTranscriptControlTokenPattern = /\bspacecontrol\.v\d+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
+/** Redacts sensitive credentials and secrets before persisting transcript text. */
 export function redactPersistedTranscriptContent(value: string): string {
   return value
     .replaceAll("\0", "")
@@ -1387,6 +1388,7 @@ export const roomAgentPreparedPaneSchema = z.object({
   reasoningEffort: reasoningEffortSchema.optional()
 });
 
+/** Validates that a room agent orchestration graph has valid nodes, edges, and entry points. */
 function validateRoomAgentOrchestrationGraph(
   steps: Array<z.infer<typeof roomAgentOrchestrationStepSchema>>,
   context: z.RefinementCtx
@@ -2386,12 +2388,14 @@ export const cliRuntimeRestartAllResultSchema = z
   })
   .strict();
 
+/** Checks whether an agent runtime session is authenticated and ready to serve turns. */
 export function isAgentRuntimeReady(
   runtime: Pick<AgentRuntime, "adapterStatus" | "authState" | "status">
 ): boolean {
   return runtime.adapterStatus === "ENABLED" && runtime.authState === "READY" && runtime.status === "ENABLED";
 }
 
+/** Checks whether an agent runtime status permits starting a new interactive login flow. */
 export function canStartAgentRuntimeLogin(
   runtime: Pick<AgentRuntime, "adapterStatus" | "authState" | "canStartLogin">
 ): boolean {
@@ -3799,6 +3803,7 @@ export const spaceBrowserToolIdSchema = z.enum([
   "browser:record"
 ]);
 
+/** Maps a browser tool action type to its required canonical browser tool identifier. */
 function expectedBrowserToolIdForAction(type: z.infer<typeof browserToolActionTypeSchema>): z.infer<typeof spaceBrowserToolIdSchema> {
   switch (type) {
     case "navigate":
@@ -6742,12 +6747,14 @@ export const artifactCollectionSchema = z.enum(["ROOM_MEDIA", "AGENT_FILES"]);
 
 const roomMediaBrowserKinds = new Set<z.infer<typeof artifactKindSchema>>(["IMAGE", "SCREENSHOT", "VIDEO"]);
 
+/** Checks whether an artifact record represents a room media attachment. */
 export function isRoomMediaArtifact(artifact: z.infer<typeof artifactSchema>): boolean {
   if (artifact.storageUri.startsWith("space-artifact://user-uploads/")) return true;
   if (artifact.storageUri.startsWith("space-artifact://cli-uploads/")) return true;
   return artifact.storageUri.startsWith("space-artifact://browser-evidence/") && roomMediaBrowserKinds.has(artifact.kind);
 }
 
+/** Checks whether an artifact record represents an agent workspace file artifact. */
 export function isAgentFileArtifact(artifact: z.infer<typeof artifactSchema>): boolean {
   return artifact.storageUri.startsWith("space-artifact://agent-files/");
 }
@@ -6870,6 +6877,9 @@ export const dummyTurnInputSchema = z.object({
   // Optional W3C trace context of the originating request (additive; see
   // docs/quality/observability.md). Never part of a workflow id.
   traceparent: traceparentSchema.optional(),
+  // Optional W3C trace context of the run a background continuation continues
+  // (additive): exported as an OTLP span link on the continuation's span.
+  sourceTraceparent: traceparentSchema.optional(),
   // Space Dots Stage 3 (additive): a gateway-enabled native Chat turn.
   dotId: dotIdSchema.optional(),
   toolGateway: z.literal("space-dot-tools-v1").optional(),
@@ -7770,6 +7780,7 @@ const memoryChangeSetSummaryShape = {
   rolledBackAt: isoDateTimeSchema.nullable()
 };
 
+/** Enforces status and timestamp invariants on a memory change-set schema payload. */
 function validateMemoryChangeSetState(
   changeSet: z.infer<z.ZodObject<typeof memoryChangeSetSummaryShape>>,
   ctx: z.RefinementCtx
@@ -7998,6 +8009,7 @@ export const agentClipboardNoteMaxCharacters = 10_000;
 export const clipboardPlanTitleMaxCharacters = 160;
 export const clipboardPlanMinimumModelMaxCharacters = 160;
 
+/** Resolves the effective clipboard source descriptor from a clipboard action payload. */
 export function resolveClipboardSource(
   existingSource: z.infer<typeof clipboardSourceSchema> | undefined,
   incomingSource: z.infer<typeof clipboardSourceSchema>
@@ -8055,6 +8067,7 @@ export const spaceAgentClipboardActionInputSchema = z.discriminatedUnion("type",
   spaceAgentClipboardSavePlanActionSchema
 ]);
 
+/** Maps a clipboard tool action type to its required canonical clipboard tool identifier. */
 function expectedClipboardToolIdForAction(
   type: z.infer<typeof spaceAgentClipboardActionInputSchema>["type"]
 ): z.infer<typeof spaceClipboardToolIdSchema> {
@@ -8134,6 +8147,7 @@ export const spaceAgentTaskActionInputSchema = z.discriminatedUnion("type", [
   spaceAgentTaskUpdateActionSchema
 ]);
 
+/** Maps a task tool action type to its required canonical task tool identifier. */
 function expectedTaskToolIdForAction(
   type: z.infer<typeof spaceAgentTaskActionInputSchema>["type"]
 ): z.infer<typeof spaceTaskToolIdSchema> {
@@ -8193,6 +8207,7 @@ export const spaceAgentMemoryActionInputSchema = z.discriminatedUnion("type", [
   spaceAgentMemorySaveActionSchema
 ]);
 
+/** Maps a memory tool action type to its required canonical memory tool identifier. */
 function expectedMemoryToolIdForAction(type: z.infer<typeof spaceAgentMemoryActionInputSchema>["type"]): z.infer<typeof spaceMemoryToolIdSchema> {
   switch (type) {
     case "search":
@@ -8258,6 +8273,7 @@ export const spaceAgentSkillActionInputSchema = z.discriminatedUnion("type", [
   spaceAgentSkillReadActionSchema
 ]);
 
+/** Maps a skill tool action type to its required canonical skill tool identifier. */
 function expectedSkillToolIdForAction(type: z.infer<typeof spaceAgentSkillActionInputSchema>["type"]): z.infer<typeof spaceSkillToolIdSchema> {
   switch (type) {
     case "list":
@@ -9248,6 +9264,7 @@ export const setupStarterRoomResponseSchema = z.object({
   onboarding: setupOnboardingSchema
 });
 
+/** Normalizes and validates a user profile link URL for safe storage and display. */
 export function canonicalizeUserLinkUrl(value: string): string {
   let parsed: URL;
   try {
@@ -10610,6 +10627,7 @@ export const spaceAgentChatActionInputSchema = z.discriminatedUnion("type", [
   spaceAgentChatReactActionSchema
 ]);
 
+/** Maps a chat tool action type to its required canonical chat tool identifier. */
 function expectedChatToolIdForAction(
   type: z.infer<typeof spaceAgentChatActionInputSchema>["type"]
 ): z.infer<typeof spaceSharedChatToolIdSchema> {

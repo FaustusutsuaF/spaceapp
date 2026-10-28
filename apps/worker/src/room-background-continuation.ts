@@ -1,8 +1,10 @@
 import {
   buildCodexAppServerTurnWorkflowId,
   buildRoomAgentSupervisorWorkflowId,
+  parseTraceparent,
   roomAgentSupervisorQueueItemSchema,
   spaceAgentRoomActionRequestSchema,
+  traceparentForTraceId,
   type RoomAgentActionRecord,
   type RoomAgentSupervisorQueueItem
 } from "@space/contracts";
@@ -10,6 +12,7 @@ import { SpaceConflictError, redactMemoryText, type SpaceStore } from "@space/ru
 import { roomActionSummary } from "./room-action-summary.js";
 import { DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS, DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS, ROOM_AGENT_CONTINUATION_LIMIT, ROOM_AGENT_TOKEN_LIMIT } from "./room-agent-limits.js";
 
+/** Summarizes completed action records within the given character budget for background continuation. */
 export function continuationEvidence(actions: RoomAgentActionRecord[], budget: number): string {
   // Count the entire mission, including synchronous actions. Background roots
   // are only a scheduling distinction, not the record of completed work.
@@ -45,6 +48,7 @@ export type BackgroundContinuationResult =
 
 interface MissionTokenUsage { usedTokens: number; countedThroughRunId: string }
 
+/** Reads normalized token usage totals from a persisted turn execution state, if present. */
 function recordedTokenUsage(executionState: Record<string, unknown>): MissionTokenUsage | null {
   const value = executionState.tokenUsage as Partial<MissionTokenUsage> | undefined;
   return value && Number.isSafeInteger(value.usedTokens) && (value.usedTokens as number) >= 0 && typeof value.countedThroughRunId === "string"
@@ -52,6 +56,7 @@ function recordedTokenUsage(executionState: Record<string, unknown>): MissionTok
     : null;
 }
 
+/** Evaluates and schedules a bounded background continuation turn when an agent turn hits its budget. */
 export async function prepareBackgroundContinuation(input: {
   roomId: string; missionId: string; continuationId: string;
 }, store: SpaceStore, maxContinuations = DEFAULT_ROOM_AGENT_MAX_CONTINUATIONS,
@@ -122,6 +127,10 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
   ].join("\n");
   const prefix = `${instructions}\n\nOperator request:\n${request}\n\nSettled action results (bounded; inspect for details):\n`;
   const prompt = prefix + continuationEvidence(actions, Math.max(0, 8000 - prefix.length));
+  const continuationTraceId = `trace:bg-${input.continuationId}`;
+  const sourceTraceparent = parseTraceparent(source.queueItem.turn.traceparent)
+    ? source.queueItem.turn.traceparent
+    : traceparentForTraceId(source.queueItem.turn.traceId);
   const item = roomAgentSupervisorQueueItemSchema.parse({ missionId: input.missionId, turn: {
     ...source.queueItem.turn,
     prompt, roomAgentOperatorRequest: request,
@@ -130,7 +139,12 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
     agentUserMessageId: `agent_msg:bg-context-${input.continuationId}`,
     agentAssistantMessageId: `agent_msg:bg-response-${input.continuationId}`,
     // Resolve the current native thread from the durable session when executing.
-    agentThreadId: null, traceId: `trace:bg-${input.continuationId}`
+    agentThreadId: null, traceId: continuationTraceId,
+    // A continuation always starts its own deterministic W3C trace and links
+    // to the run it continues (the source turn's traceparent, or one derived
+    // from its Space trace id when the source had no inbound header).
+    traceparent: traceparentForTraceId(continuationTraceId),
+    ...(sourceTraceparent ? { sourceTraceparent } : {})
   } });
   try {
     const enqueued = await store.enqueueRoomAgentMission({
@@ -150,6 +164,7 @@ maxMissionTokens: number | null = DEFAULT_ROOM_AGENT_MAX_MISSION_TOKENS): Promis
 }
 
 // Without an errorCode the turn was superseded or stopped; with one it failed and keeps that cause.
+/** Marks a queued supervisor turn and its mission as discarded when it cannot be executed. */
 export async function discardSupervisorTurn(item: RoomAgentSupervisorQueueItem, reason: string, store: SpaceStore, errorCode?: string) {
   const record = await store.getRoomAgentTurn(item.missionId, item.turn.agentRunId);
   if (!record || !["QUEUED", "RUNNING"].includes(record.run.status)) return;
@@ -161,6 +176,7 @@ export async function discardSupervisorTurn(item: RoomAgentSupervisorQueueItem, 
   await store.updateSpaceAgentMessage(record.run.responseMessageId, { status, content: reason });
 }
 
+/** Resolves whether a queued supervisor turn is ready to run, paused on mission state, or should be skipped. */
 export async function supervisorTurnState(item: RoomAgentSupervisorQueueItem, store: SpaceStore): Promise<"READY" | "PAUSED" | "SKIP"> {
   const mission = await store.getRoomAgentMission(item.turn.roomId, item.missionId);
   const record = await store.getRoomAgentTurn(item.missionId, item.turn.agentRunId);
@@ -181,6 +197,7 @@ export async function supervisorTurnState(item: RoomAgentSupervisorQueueItem, st
   return "READY";
 }
 
+/** Finalizes a supervisor turn and decides whether to schedule a background continuation. */
 export async function finishSupervisorTurn(input: {
   item: RoomAgentSupervisorQueueItem; status: "COMPLETED" | "FAILED" | "INTERRUPTED"; statusReason: string; errorCode?: string;
 }, store: SpaceStore) {

@@ -8,6 +8,7 @@ import {
   isSafeErrorCode,
   parseTraceparent,
   traceIdFromTraceparent,
+  traceparentForTraceId,
   workerReadinessSchema
 } from "../src/index.js";
 
@@ -79,6 +80,19 @@ describe("W3C traceparent", () => {
 
   it("accepts a future version by its version-00 prefix", () => {
     expect(parseTraceparent(`01-${traceId}-${spanId}-01-future`)?.traceId).toBe(traceId);
+  });
+
+  it("derives a stable W3C traceparent from a Space trace id", () => {
+    const header = traceparentForTraceId("trace:bg-test-1");
+    expect(parseTraceparent(header)).toEqual({
+      traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
+      parentId: expect.stringMatching(/^[0-9a-f]{16}$/),
+      flags: "01"
+    });
+    expect(traceparentForTraceId("trace:bg-test-1")).toBe(header);
+    expect(traceparentForTraceId("trace:continuation-initial")).not.toBe(header);
+    expect(traceparentForTraceId("please summarize my secret plan")).toBeNull();
+    expect(traceparentForTraceId(undefined)).toBeNull();
   });
 });
 

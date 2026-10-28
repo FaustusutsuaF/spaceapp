@@ -111,6 +111,7 @@ export function parseTraceparent(value: unknown): ParsedTraceparent | null {
   return { traceId, parentId, flags };
 }
 
+/** Formats a W3C traceparent header (`00-<traceId>-<spanId>-<flags>`). */
 export function formatTraceparent(traceId: string, spanId: string, flags = "01"): string {
   return `00-${traceId}-${spanId}-${flags}`;
 }
@@ -118,6 +119,33 @@ export function formatTraceparent(traceId: string, spanId: string, flags = "01")
 /** The trace id of a valid traceparent, otherwise null. */
 export function traceIdFromTraceparent(value: unknown): string | null {
   return parseTraceparent(value)?.traceId ?? null;
+}
+
+const FNV1A_OFFSET = 0xcbf29ce484222325n;
+const FNV1A_PRIME = 0x100000001b3n;
+const spaceTraceIdPattern = /^[A-Za-z0-9:._-]{1,128}$/;
+
+/** Computes a deterministic 64-bit FNV-1a digest as 16 lowercase hex chars. */
+function fnv1a64Hex(value: string): string {
+  let hash = FNV1A_OFFSET;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= BigInt(value.charCodeAt(index) & 0xff);
+    hash = BigInt.asUintN(64, hash * FNV1A_PRIME);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
+/**
+ * Deterministic W3C traceparent derived from a Space trace id (`trace:...`,
+ * `req:...`). Worker-internal runs (background continuations) use this when
+ * there is no inbound header, so the run still has a joinable W3C trace.
+ */
+export function traceparentForTraceId(traceId: string | null | undefined): string | null {
+  if (typeof traceId !== "string" || !spaceTraceIdPattern.test(traceId)) return null;
+  const w3cTraceId = fnv1a64Hex(traceId + "|trace-a") + fnv1a64Hex(traceId + "|trace-b");
+  const spanId = fnv1a64Hex(traceId + "|span");
+  if (/^0+$/.test(w3cTraceId) || /^0+$/.test(spanId)) return null;
+  return formatTraceparent(w3cTraceId, spanId);
 }
 
 /**
