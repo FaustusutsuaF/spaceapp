@@ -294,8 +294,8 @@ jobs:
       - name: Create sanitized public export
         run: |
           rm -rf /tmp/spaceapp-public
-          node scripts/public-export.mjs /tmp/spaceapp-public
-          node scripts/public-export.mjs --verify-dir /tmp/spaceapp-public
+          node scripts/public-export.mjs --verify
+          node scripts/public-export.mjs --output /tmp/spaceapp-public
       - name: Download built amd64 container images
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -318,7 +318,8 @@ jobs:
           docker pull "$POSTGRES_IMAGE"
           docker pull "$TEMPORAL_IMAGE"
 
-          export SPACEAPP_HOME="$(mktemp -d)"
+          SPACEAPP_HOME="$(mktemp -d)"
+          export SPACEAPP_HOME
           ANSWERS_FILE="$(mktemp)"
           cleanup() {
             docker compose --project-directory "$SPACEAPP_HOME" -f "$SPACEAPP_HOME/compose.yml" --env-file "$SPACEAPP_HOME/.env" --profile standard down -v --remove-orphans >/dev/null 2>&1 || true
