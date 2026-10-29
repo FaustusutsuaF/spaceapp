@@ -3,6 +3,7 @@ import {
   categorizeFailureCode,
   dummyTurnInputSchema,
   failureCategorySchema,
+  fnv1a64Hex,
   fileSearchResponseSchema,
   formatTraceparent,
   isSafeErrorCode,
@@ -121,5 +122,13 @@ describe("additive observability contract fields", () => {
     };
     expect(workerReadinessSchema.parse(readiness).workflowBacklogAgeSeconds).toBeUndefined();
     expect(workerReadinessSchema.parse({ ...readiness, workflowBacklogAgeSeconds: 2.5 }).workflowBacklogAgeSeconds).toBe(2.5);
+  });
+});
+
+describe("fnv1a64Hex", () => {
+  it("matches FNV-1a 64-bit reference vectors as 16 lowercase hex chars", () => {
+    expect(fnv1a64Hex("")).toBe("cbf29ce484222325");
+    expect(fnv1a64Hex("a")).toBe("af63dc4c8601ec8c");
+    expect(fnv1a64Hex("foobar")).toBe("85944171f73967e8");
   });
 });

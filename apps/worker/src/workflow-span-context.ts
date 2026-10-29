@@ -7,7 +7,7 @@
  * no I/O) and from worker code and tests alike.
  */
 
-import { parseTraceparent, type ParsedTraceparent } from "@space/contracts";
+import { fnv1a64Hex, parseTraceparent, type ParsedTraceparent } from "@space/contracts";
 
 /** Temporal header that carries the workflow run's span context to activities and child workflows. */
 export const SPAN_CONTEXT_HEADER = "space.span-context";
@@ -72,18 +72,8 @@ export const WORKFLOW_SPAN_ATTRIBUTE_ALLOWLIST = [
 
 export type WorkflowSpanAttributeKey = (typeof WORKFLOW_SPAN_ATTRIBUTE_ALLOWLIST)[number];
 
-const FNV1A_OFFSET = 0xcbf29ce484222325n;
-const FNV1A_PRIME = 0x100000001b3n;
-
-/** Deterministic FNV-1a 64-bit hash as 16 lowercase hex digits. */
-export function fnv1a64Hex(value: string): string {
-  let hash = FNV1A_OFFSET;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= BigInt(value.charCodeAt(index) & 0xff);
-    hash = BigInt.asUintN(64, hash * FNV1A_PRIME);
-  }
-  return hash.toString(16).padStart(16, "0");
-}
+/** Re-exported shared FNV-1a 64-bit helper from `@space/contracts` (single implementation). */
+export { fnv1a64Hex };
 
 /** Deterministic span id for one workflow run; stable across replays of the same history. */
 export function workflowSpanId(workflowId: string, runId: string): string {

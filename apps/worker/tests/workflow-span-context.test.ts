@@ -9,6 +9,7 @@ import {
   workflowTraceId,
   WORKFLOW_SPAN_ATTRIBUTE_ALLOWLIST
 } from "../src/workflow-span-context.js";
+import { fnv1a64Hex as contractsFnv1a64Hex } from "@space/contracts";
 
 const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const secretPrompt = "PRIVATE PROMPT: deploy with token sk-live-worker-secret-123";
@@ -148,5 +149,11 @@ describe("span-context header payload", () => {
       "space.space_trace_id",
       "space.continuation_generation"
     ]);
+  });
+});
+
+describe("shared FNV-1a helper", () => {
+  it("re-exports the single @space/contracts implementation", () => {
+    expect(fnv1a64Hex).toBe(contractsFnv1a64Hex);
   });
 });

@@ -22909,9 +22909,9 @@
     },
     {
       "path": "apps/worker/src/workflow-span-context.ts",
-      "sourceObjectId": "66e9cb909e31b5214c2ea3397988be1c8705ecc3",
-      "sha256": "176a73890f399e5c385d624b862b91043dd87a67500a6fe42e14fac4e0bc3e4f",
-      "size": 8766
+      "sourceObjectId": "54f31ceb1c4fb93c94a7e7845f87e2b6e34bd200",
+      "sha256": "079a1655d5707268d67f04f04c8dc34f704f6636a6ecefd5eaee2a76a7414275",
+      "size": 8461
     },
     {
       "path": "apps/worker/src/workflow-spans-sink.ts",
@@ -23149,9 +23149,9 @@
     },
     {
       "path": "apps/worker/tests/workflow-span-context.test.ts",
-      "sourceObjectId": "bb5875976d02911c66cd67eddcfc4ec7c27453f8",
-      "sha256": "27692131acb3f4ab6cbded1ddc7d141115148889eea2bcde3465b4d303f09712",
-      "size": 7246
+      "sourceObjectId": "6048bf17eec40318fb374217a56311d992e27068",
+      "sha256": "9d7f12f3724fd004a5aa4755cd20adb58af6593b9cca54ade9e4c23d2c251a00",
+      "size": 7488
     },
     {
       "path": "apps/worker/tests/workflow-span-integration.test.ts",
@@ -24055,9 +24055,9 @@
     },
     {
       "path": "packages/contracts/src/observability.ts",
-      "sourceObjectId": "25902119c9ad32131d85b80b6a62375418a1bcb2",
-      "sha256": "d2a03cd88b945fc746cba62d2e9924efe3f5e427237a5a7892a4858b22b1e7e4",
-      "size": 9255
+      "sourceObjectId": "103748800ab9300f2f82b93f8c7a9b01989c8acf",
+      "sha256": "aa401663e135404ee01445740346217ef040bf6f1baac04a182ba3ef07b134cf",
+      "size": 9411
     },
     {
       "path": "packages/contracts/src/pane-catalog.ts",
@@ -24469,9 +24469,9 @@
     },
     {
       "path": "packages/contracts/tests/observability.test.ts",
-      "sourceObjectId": "e03cad731ff150ddbf7126e69efb3568e1c10204",
-      "sha256": "11eab017c790aa66562c73161d8d6a640433b61ca1793a1f7dd438b42b583161",
-      "size": 5427
+      "sourceObjectId": "bf29665b557ad4e98caf82d34d7d7949768ded01",
+      "sha256": "da3790c7d0d5e1f59f8e7249604be8552d9d7c4fff3d9e81a0cdde74f000f261",
+      "size": 5731
     },
     {
       "path": "packages/contracts/tests/pane-catalog.test.ts",

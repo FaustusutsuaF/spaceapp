@@ -125,8 +125,12 @@ const FNV1A_OFFSET = 0xcbf29ce484222325n;
 const FNV1A_PRIME = 0x100000001b3n;
 const spaceTraceIdPattern = /^[A-Za-z0-9:._-]{1,128}$/;
 
-/** Computes a deterministic 64-bit FNV-1a digest as 16 lowercase hex chars. */
-function fnv1a64Hex(value: string): string {
+/**
+ * Computes a deterministic 64-bit FNV-1a digest as 16 lowercase hex chars.
+ * Pure and sandbox-safe (no I/O, clocks, or randomness), so Temporal workflow
+ * code may import it to derive replay-stable trace and span ids.
+ */
+export function fnv1a64Hex(value: string): string {
   let hash = FNV1A_OFFSET;
   for (let index = 0; index < value.length; index++) {
     hash ^= BigInt(value.charCodeAt(index) & 0xff);
